@@ -79,3 +79,32 @@ async function initShopify() {
 
 // Disparamos init sin await (no bloquea build ni arranque)
 initShopify();
+
+
+// --- Warm-up automático para Render ---
+if (process.env.WARMUP_ON_START === "1") {
+  (async () => {
+    try {
+      const base =
+        process.env.APP_PUBLIC_URL || "https://silbon-bestsellers-api.onrender.com";
+      const segs = ["woman", "man", "kids", "teens"];
+      const today = new Date();
+      const to = today.toISOString().split("T")[0];
+      const from = new Date(today.getTime() - 30 * 864e5)
+        .toISOString()
+        .split("T")[0];
+
+      console.log("[warmup] precargando caché bestsellers...");
+
+      for (const s of segs) {
+        fetch(
+          `${base}/api/bestsellers?from=${from}&to=${to}&limit=19&segments=${s}`
+        ).catch(() => {});
+      }
+
+      console.log("[warmup] finalizado");
+    } catch (err) {
+      console.warn("[warmup] error:", err);
+    }
+  })();
+}
