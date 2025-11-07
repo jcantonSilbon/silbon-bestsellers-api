@@ -37,10 +37,11 @@ function corsHeaders(origin: string | null) {
 type GQLError = { message: string; extensions?: Record<string, unknown> };
 type GraphQLResponse<T> = { data?: T; errors?: GQLError[] };
 
+// Admin GQL con soporte de AbortSignal
 async function adminGQL<
   TData = unknown,
   TVars extends Record<string, unknown> = Record<string, unknown>
->(query: string, variables?: TVars): Promise<TData> {
+>(query: string, variables?: TVars, signal?: AbortSignal): Promise<TData> {
   const shop = process.env.SHOPIFY_SHOP_DOMAIN!; // p.ej. silbon-store.myshopify.com
   const token = process.env.SHOPIFY_ADMIN_TOKEN!; // Admin access token
   const url = `https://${shop}/admin/api/2024-10/graphql.json`;
@@ -52,6 +53,7 @@ async function adminGQL<
       "X-Shopify-Access-Token": token,
     },
     body: JSON.stringify({ query, variables }),
+    signal,
   });
 
   const json = (await r.json().catch(() => ({}))) as GraphQLResponse<TData>;
@@ -59,6 +61,21 @@ async function adminGQL<
     throw { status: r.status, statusText: r.statusText, errors: json.errors, body: json } as const;
   }
   return (json.data as TData) ?? (null as unknown as TData);
+}
+
+// Wrapper con timeout para evitar cuelgues por página
+async function adminGQLWithTimeout<T>(
+  query: string,
+  variables: Record<string, unknown> | undefined,
+  ms = 15000
+): Promise<T> {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  try {
+    return await adminGQL<T>(query, variables, ac.signal);
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 /* ==================== S E G M E N T O S ==================== */
@@ -176,9 +193,17 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
   }).catch(() => {});
 }
 
-const CACHE_VER = "v3";
+const CACHE_VER = "v4";
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}`;
+}
+
+/* ===================== F E C H A S  U T C ===================== */
+function startOfDayUTC(d: Date) {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+function endOfDayUTC(d: Date) {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
 }
 
 /* ======================= L O A D E R ======================= */
@@ -192,14 +217,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const debug = url.searchParams.get("debug") === "1";
   const nocache = url.searchParams.get("nocache") === "1";
 
-  // Fechas
-  const toDate = url.searchParams.get("to") ? new Date(url.searchParams.get("to")!) : new Date();
-  const fromDate = url.searchParams.get("from")
-    ? new Date(url.searchParams.get("from")!)
-    : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+  // Fechas (normalizadas a bordes de día UTC para mejorar cache hit)
+  const toParam = url.searchParams.get("to");
+  const fromParam = url.searchParams.get("from");
 
-  const toISO = toDate.toISOString();
-  const fromISO = fromDate.toISOString();
+  const toDateRaw = toParam ? new Date(toParam) : new Date();
+  const fromDateRaw = fromParam ? new Date(fromParam) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+
+  const toISO = endOfDayUTC(toDateRaw).toISOString();
+  const fromISO = startOfDayUTC(fromDateRaw).toISOString();
 
   const resp: Resp = { handles: [] };
   if (debug) {
@@ -215,18 +241,21 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const key = k(fromISO, toISO, segments, limit);
   const now = Date.now();
 
+  // 1) Memory cache
   if (!nocache) {
     const m = mem.get(key);
     if (m && now - m.at < MEM_TTL * 1000) {
       if (debug) (m.value.meta ??= {}).cache = "memory";
       return new Response(JSON.stringify(m.value), { headers: corsHeaders(origin) });
     }
-    const rHit = await redisGet(key);
-    if (rHit) {
-      if (debug) (rHit.meta ??= {}).cache = "redis";
-      mem.set(key, { at: now, value: rHit });
-      return new Response(JSON.stringify(rHit), { headers: corsHeaders(origin) });
-    }
+  }
+
+  // 2) Redis cache
+  const redisCached = !nocache ? await redisGet(key) : null;
+  if (redisCached) {
+    if (debug) (redisCached.meta ??= {}).cache = "redis";
+    mem.set(key, { at: now, value: redisCached });
+    return new Response(JSON.stringify(redisCached), { headers: corsHeaders(origin) });
   }
 
   try {
@@ -234,15 +263,23 @@ export async function loader({ request }: LoaderFunctionArgs) {
     type ProdSmoke = { products: { nodes: Array<{ id: string; handle: string }> } };
     type OrdSmoke = { orders: { nodes: Array<{ id: string }> } };
 
-    const prodSmoke = await adminGQL<ProdSmoke>(`query { products(first:1){ nodes { id handle } } }`);
-    const ordersSmoke = await adminGQL<OrdSmoke>(`query { orders(first:1){ nodes { id } } }`);
+    const prodSmoke = await adminGQLWithTimeout<ProdSmoke>(
+      `query { products(first:1){ nodes { id handle } } }`,
+      undefined,
+      10000
+    );
+    const ordersSmoke = await adminGQLWithTimeout<OrdSmoke>(
+      `query { orders(first:1){ nodes { id } } }`,
+      undefined,
+      10000
+    );
 
     if (debug) {
       (resp.meta ??= {}).prodSmoke = prodSmoke?.products?.nodes?.length ?? 0;
       (resp.meta ??= {}).ordersSmoke = ordersSmoke?.orders?.nodes?.length ?? 0;
     }
 
-    // Query real
+    // Query real (últimos 30d o rango manual)
     const searchBase = `financial_status:paid created_at:>=${fromISO} created_at:<=${toISO}`;
     const ORDERS_QUERY = `
       query Orders($cursor:String) {
@@ -270,11 +307,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     const qtyByProductId = new Map<string, number>();
     let cursor: string | null = null;
-    let pages = 0,
-      scanned = 0;
+    let pages = 0, scanned = 0;
 
     do {
-      const data = await adminGQL<OrdersPage>(ORDERS_QUERY, { cursor });
+      const data = await adminGQLWithTimeout<OrdersPage>(ORDERS_QUERY, { cursor }, 15000);
       const { nodes, pageInfo } = data.orders;
       pages++;
       for (const o of nodes) {
@@ -308,9 +344,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle } } }`;
     type NodesResp = { nodes: Array<{ id?: string; handle?: string } | null> };
-    const nd = await adminGQL<NodesResp>(NODES_QUERY, { ids: topIds });
+    const nd = await adminGQLWithTimeout<NodesResp>(NODES_QUERY, { ids: topIds }, 10000);
 
-    resp.handles = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter((h): h is string => Boolean(h));
+    resp.handles = (nd.nodes || [])
+      .filter(Boolean)
+      .map((n) => n!.handle)
+      .filter((h): h is string => Boolean(h));
 
     // Cache write
     mem.set(key, { at: now, value: resp });
@@ -318,6 +357,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     return new Response(JSON.stringify(resp), { headers: corsHeaders(origin) });
   } catch (e: unknown) {
+    // stale-if-error: si tenemos algo previo en Redis (o en memoria), devuélvelo
+    const stale = mem.get(key)?.value || redisCached;
+    if (stale) {
+      if (debug) (stale.meta ??= {}).stale = true;
+      return new Response(JSON.stringify(stale), { headers: corsHeaders(origin) });
+    }
+
     if (debug) {
       (resp.meta ??= {}).error = e;
       (resp.meta ??= {}).tip =
