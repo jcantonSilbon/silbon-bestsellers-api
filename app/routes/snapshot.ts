@@ -129,6 +129,21 @@ function allCombinations<T>(arr: readonly T[], includeEmpty = true): Array<Set<T
   return out;
 }
 
+/* ========================= L Í M I T E S  M Ú L T I P L E S ========================= */
+function parseLimits(url: URL): number[] {
+  const raw = (url.searchParams.get("limits") || "").trim();
+  if (!raw) {
+    const single = Math.min(parseInt(url.searchParams.get("limit") || "100", 10), 100);
+    return [isFinite(single) && single > 0 ? single : 100];
+  }
+  const out = new Set<number>();
+  for (const p of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const n = Math.min(parseInt(p, 10), 100);
+    if (isFinite(n) && n > 0) out.add(n);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
 /* ================================ L O A D E R ================================ */
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
@@ -140,8 +155,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     });
   }
 
-  // Config por query o defaults
-  const limit = Math.min(parseInt(url.searchParams.get("limit") || "100", 10), 100);
+  // Config: múltiples límites o uno solo
+  const limits = parseLimits(url); // p.ej. [20,60,100]
 
   // Últimos 30 días (normalizado a bordes de día UTC)
   const toISO = endOfDayUTC(new Date()).toISOString();
@@ -190,7 +205,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     cursor = pageInfo.hasNextPage ? pageInfo.endCursor : null;
   } while (cursor);
 
-  // Helper para construir y guardar un snapshot para un set de segmentos
+  // Helper para construir y guardar snapshots para un set de segmentos en TODOS los límites pedidoss
   async function buildAndSaveSnapshotFor(segs: Set<Segment>) {
     const qtyByProductId = new Map<string, number>();
 
@@ -200,32 +215,47 @@ export async function loader({ request }: LoaderFunctionArgs) {
       qtyByProductId.set(p.id, (qtyByProductId.get(p.id) || 0) + li.quantity);
     }
 
-    const key = snapKey(segs, limit);
-
+    // Si no hay ventas, guardar vacío para todos los límites
     if (!qtyByProductId.size) {
-      await redisSet(key, {
-        handles: [],
-        meta: { snapshot_at: new Date().toISOString(), range: { from: fromISO, to: toISO }, segments: [...segs] },
-      });
+      for (const L of limits) {
+        await redisSet(snapKey(segs, L), {
+          handles: [],
+          meta: {
+            snapshot_at: new Date().toISOString(),
+            range: { from: fromISO, to: toISO },
+            segments: [...segs],
+            source: "snapshot",
+          },
+        });
+      }
       return;
     }
 
-    const topIds = [...qtyByProductId.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => id);
+    // Ordenamos por cantidad una sola vez
+    const sortedIds = [...qtyByProductId.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+
+    // Resolvemos handles una sola vez con el límite máximo
+    const maxL = Math.max(...limits);
+    const topForMax = sortedIds.slice(0, maxL);
+
     const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle } } }`;
     type NodesResp = { nodes: Array<{ id?: string; handle?: string } | null> };
-    const nd = await gqlWithTimeout<NodesResp>(NODES_QUERY, { ids: topIds }, 10000);
+    const nd = await gqlWithTimeout<NodesResp>(NODES_QUERY, { ids: topForMax }, 10000);
+    const handlesMax = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter(Boolean) as string[];
 
-    const handles = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter(Boolean) as string[];
-    const payload: Resp = {
-      handles,
-      meta: {
-        snapshot_at: new Date().toISOString(),
-        range: { from: fromISO, to: toISO },
-        segments: [...segs],
-        source: "snapshot",
-      },
-    };
-    await redisSet(key, payload);
+    // Guardamos todas las variantes de límite recortando del máximo
+    for (const L of limits) {
+      const handles = handlesMax.slice(0, L);
+      await redisSet(snapKey(segs, L), {
+        handles,
+        meta: {
+          snapshot_at: new Date().toISOString(),
+          range: { from: fromISO, to: toISO },
+          segments: [...segs],
+          source: "snapshot",
+        },
+      });
+    }
   }
 
   // 2) Calcula y guarda snapshots para TODAS las combinaciones (incluida empty = "all")
@@ -242,7 +272,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       snapshot_at: new Date().toISOString(),
       range: { from: fromISO, to: toISO },
       segments: combos.map((s) => [...s].join("+") || "all"),
-      limit,
+      limits,
     }),
     { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
   );

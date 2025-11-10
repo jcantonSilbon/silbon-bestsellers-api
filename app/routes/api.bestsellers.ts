@@ -100,15 +100,15 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
 
   const tagsTokens = tokenSet(p.tags || []), ptTokens = tokenSet(p.productType || "");
   const TOK = {
-    man: ["gender:man","gender:men","man","men","caballero","mens","hombre","hombres"] as const,
-    woman: ["gender:woman","woman","women","mujer","mujeres","dama","womens","ladies","fem"] as const,
-    teens: ["segment:teens","teen","teens","juvenil","adolesc"] as const,
-    kids: ["segment:kids","kid","kids","niño","nino","niña","nina","infantil","children","child"] as const,
+    man: ["gender:man", "gender:men", "man", "men", "caballero", "mens", "hombre", "hombres"] as const,
+    woman: ["gender:woman", "woman", "women", "mujer", "mujeres", "dama", "womens", "ladies", "fem"] as const,
+    teens: ["segment:teens", "teen", "teens", "juvenil", "adolesc"] as const,
+    kids: ["segment:kids", "kid", "kids", "niño", "nino", "niña", "nina", "infantil", "children", "child"] as const,
   };
   const okMan = hasAnyToken(tagsTokens, TOK.man) || hasAnyToken(ptTokens, TOK.man);
   const okWoman = hasAnyToken(tagsTokens, TOK.woman) || hasAnyToken(ptTokens, TOK.woman);
   const okTeens = hasAnyToken(tagsTokens, TOK.teens) || hasAnyToken(ptTokens, TOK.teens);
-  const okKids  = hasAnyToken(tagsTokens, TOK.kids)  || hasAnyToken(ptTokens, TOK.kids);
+  const okKids = hasAnyToken(tagsTokens, TOK.kids) || hasAnyToken(ptTokens, TOK.kids);
 
   const wantsMan = segments.has("man"), wantsWoman = segments.has("woman");
   if (wantsMan && !wantsWoman) return okMan && !okWoman;
@@ -143,7 +143,7 @@ async function redisSet(key: string, value: Resp, ttlSec?: number) {
     method: "POST",
     headers: { Authorization: `Bearer ${R_TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 // Claves
@@ -158,7 +158,7 @@ function snapKey(segs: Set<Segment>, limit: number) {
 
 /* ===================== F E C H A S  U T C ===================== */
 function startOfDayUTC(d: Date) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())); }
-function endOfDayUTC(d: Date)   { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23,59,59,999)); }
+function endOfDayUTC(d: Date) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999)); }
 
 /* ======================= L O A D E R  (SERVE) ======================= */
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -174,15 +174,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const resp: Resp = { handles: [] };
 
+
   // 1) Intentar SNAPSHOT primero (ultrarrápido)
   if (useSnapshot) {
     const sKey = snapKey(segments, limit);
     const snap = await redisGet(sKey);
-    if (snap && snap.handles?.length) {
+    if (snap && Array.isArray(snap.handles)) {
       if (debug) (snap.meta ??= {}).source = "snapshot";
-      return new Response(JSON.stringify(snap), { headers: corsHeaders(origin) });
+      return new Response(JSON.stringify(snap), {
+        headers: { ...corsHeaders(origin), "X-Bestsellers-Source": "snapshot" }
+      });
     }
   }
+
 
   // 2) Fallback a cálculo en vivo (por si snapshot aún no existe)
   const toParam = url.searchParams.get("to");
@@ -300,3 +304,4 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return new Response(JSON.stringify({ handles: [], meta: { error: "live-failed" } }), { headers: corsHeaders(origin) });
   }
 }
+// 1) Inten
