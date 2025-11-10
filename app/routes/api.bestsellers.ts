@@ -126,6 +126,18 @@ const mem = new Map<string, { at: number; value: Resp }>();
 const R_URL = process.env.UPSTASH_REDIS_REST_URL;
 const R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
+/** Unwrap defensivo por si llega { value: "<json>", EX } o un string JSON */
+function unwrapMaybeWrapped(v: any): Resp | null {
+  try {
+    if (typeof v === "string") return JSON.parse(v) as Resp;
+    if (v && typeof v === "object" && typeof v.value === "string") {
+      return JSON.parse(v.value) as Resp;
+    }
+    if (v && Array.isArray((v as Resp).handles)) return v as Resp;
+  } catch {}
+  return null;
+}
+
 async function redisGet(key: string): Promise<Resp | null> {
   if (!R_URL || !R_TOKEN) return null;
 
@@ -139,14 +151,12 @@ async function redisGet(key: string): Promise<Resp | null> {
 
   try {
     const first = JSON.parse(j.result);
-    // Si first es un string, significa que estaba doblemente stringificado
     const val = typeof first === "string" ? JSON.parse(first) : first;
-    return val as Resp;
+    return unwrapMaybeWrapped(val);
   } catch {
     return null;
   }
 }
-
 
 async function redisSet(key: string, value: Resp, ttlSec?: number) {
   if (!R_URL || !R_TOKEN) return;
@@ -187,7 +197,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const resp: Resp = { handles: [] };
 
-
   // 1) Intentar SNAPSHOT primero (ultrarrápido)
   if (useSnapshot) {
     const sKey = snapKey(segments, limit);
@@ -199,7 +208,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
       });
     }
   }
-
 
   // 2) Fallback a cálculo en vivo (por si snapshot aún no existe)
   const toParam = url.searchParams.get("to");
@@ -224,13 +232,22 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const now = Date.now();
 
   if (!nocache) {
+    // MEMORIA
     const m = mem.get(key);
     if (m && now - m.at < MEM_TTL * 1000) {
-      if (debug) (m.value.meta ??= {}).cache = "memory";
-      return new Response(JSON.stringify(m.value), { headers: corsHeaders(origin) });
+      const clean = unwrapMaybeWrapped(m.value);
+      if (clean) {
+        if (debug) (clean.meta ??= {}).cache = "memory";
+        return new Response(JSON.stringify(clean), { headers: corsHeaders(origin) });
+      }
+      // si estaba mal, lo purgamos
+      mem.delete(key);
     }
-    const rHit = await redisGet(key);
-    if (rHit) {
+
+    // REDIS
+    const rHitRaw = await redisGet(key); // ya viene "limpio" por redisGet
+    if (rHitRaw) {
+      const rHit = unwrapMaybeWrapped(rHitRaw) || rHitRaw;
       if (debug) (rHit.meta ??= {}).cache = "redis";
       mem.set(key, { at: now, value: rHit });
       return new Response(JSON.stringify(rHit), { headers: corsHeaders(origin) });
@@ -309,7 +326,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return new Response(JSON.stringify(resp), { headers: corsHeaders(origin) });
   } catch (e: unknown) {
     // stale-if-error desde memoria/redis live
-    const stale = mem.get(key)?.value || (await redisGet(key));
+    const staleRaw = mem.get(key)?.value || (await redisGet(key));
+    const stale = unwrapMaybeWrapped(staleRaw) || staleRaw || null;
     if (stale) {
       if (debug) (stale.meta ??= {}).stale = true;
       return new Response(JSON.stringify(stale), { headers: corsHeaders(origin) });
