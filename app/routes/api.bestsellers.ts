@@ -128,13 +128,26 @@ const R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 async function redisGet(key: string): Promise<Resp | null> {
   if (!R_URL || !R_TOKEN) return null;
+
   const r = await fetch(`${R_URL}/get/${encodeURIComponent(key)}`, {
     headers: { Authorization: `Bearer ${R_TOKEN}` },
   });
   if (!r.ok) return null;
+
   const j = (await r.json().catch(() => null)) as { result?: string } | null;
-  return j?.result ? (JSON.parse(j.result) as Resp) : null;
+  if (!j?.result) return null;
+
+  try {
+    const first = JSON.parse(j.result);
+    // Si first es un string, significa que estaba doblemente stringificado
+    const val = typeof first === "string" ? JSON.parse(first) : first;
+    return val as Resp;
+  } catch {
+    return null;
+  }
 }
+
+
 async function redisSet(key: string, value: Resp, ttlSec?: number) {
   if (!R_URL || !R_TOKEN) return;
   const body: any = { value: JSON.stringify(value) };
