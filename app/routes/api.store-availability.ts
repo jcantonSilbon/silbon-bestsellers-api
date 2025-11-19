@@ -84,14 +84,19 @@ type InventoryLevelNode = {
   location: {
     id: string;
     name: string;
+    phone?: string | null;
     address?: {
+      address1?: string | null;
+      address2?: string | null;
       city?: string | null;
+      province?: string | null;
       provinceCode?: string | null;
       countryCode?: string | null;
       zip?: string | null;
     } | null;
   };
 };
+
 
 type InventoryByVariantRes = {
   productVariant: {
@@ -182,16 +187,22 @@ export async function loader({ request }: LoaderFunctionArgs) {
                       name
                       quantity
                     }
-                    location {
-                      id
-                      name
-                      address {
-                        city
-                        provinceCode
-                        countryCode
-                        zip
-                      }
+                    
+                  location {
+                    id
+                    name
+                    phone
+                    address {
+                      address1
+                      address2
+                      city
+                      provinceCode
+                      province
+                      countryCode
+                      zip
                     }
+                  }
+
                   }
                 }
               }
@@ -231,16 +242,22 @@ export async function loader({ request }: LoaderFunctionArgs) {
                         name
                         quantity
                       }
-                      location {
-                        id
-                        name
-                        address {
-                          city
-                          provinceCode
-                          countryCode
-                          zip
-                        }
+                     
+                    location {
+                      id
+                      name
+                      phone
+                      address {
+                        address1
+                        address2
+                        city
+                        provinceCode
+                        province
+                        countryCode
+                        zip
                       }
+                    }
+
                     }
                   }
                 }
@@ -276,13 +293,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
           id: lvl.location.id,
           name: lvl.location.name,
           available: availableQty?.quantity ?? 0,
+          phone: lvl.location.phone ?? null,
+          address1: lvl.location.address?.address1 ?? null,
+          address2: lvl.location.address?.address2 ?? null,
           city: lvl.location.address?.city ?? null,
+          province: lvl.location.address?.province ?? null,
           provinceCode: lvl.location.address?.provinceCode ?? null,
           countryCode: lvl.location.address?.countryCode ?? null,
           zip: lvl.location.address?.zip ?? null,
         };
       })
       .filter((loc) => loc.available > 0);
+
 
     // Filtro por provincias si viene ?province=SE,CO,...
     if (provinces.length) {
