@@ -38,6 +38,29 @@ function corsHeaders(origin: string | null) {
   };
 }
 
+/** ------- REST API para obtener locations con teléfono ------- */
+async function getLocationsREST(): Promise<any[]> {
+  const shop = process.env.INVENTORY_SHOP_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN!;
+  const token = process.env.INVENTORY_ADMIN_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN!;
+
+  const url = `https://${shop}/admin/api/2024-10/locations.json`;
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "X-Shopify-Access-Token": token,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`REST API failed: ${res.status}`);
+  }
+
+  const json = await res.json();
+  return json.locations || [];
+}
+
+
 /** ------- Admin GraphQL (app de inventario) ------- */
 
 async function adminInventoryGQL<T = any>(
@@ -282,23 +305,42 @@ export async function loader({ request }: LoaderFunctionArgs) {
       levels = first.inventoryLevels.edges.map((e) => e.node);
     }
 
-    // Normalizamos respuesta
+    // 2. Obtener locations completas con REST API (incluye phone)
+    const restLocations = await getLocationsREST();
+
+    // 3. Crear un mapa de locations por ID para lookup rápido
+    const locationMap = new Map();
+    restLocations.forEach((loc) => {
+      locationMap.set(`gid://shopify/Location/${loc.id}`, {
+        phone: loc.phone,
+        address1: loc.address1,
+        address2: loc.address2,
+        city: loc.city,
+        province: loc.province,
+        provinceCode: loc.province_code,
+        zip: loc.zip,
+      });
+    });
+
+
+    // 4. Normalizar respuesta combinando GraphQL + REST
     let locations = levels
       .map((lvl) => {
-        const availableQty = lvl.quantities.find(
-          (q) => q.name === "available",
-        );
+        const availableQty = lvl.quantities.find((q) => q.name === "available");
+        const restData = locationMap.get(lvl.location.id) || {};
+        
         return {
           id: lvl.location.id,
           name: lvl.location.name,
           available: availableQty?.quantity ?? 0,
-          address1: lvl.location.address?.address1 ?? null,
-          address2: lvl.location.address?.address2 ?? null,
-          city: lvl.location.address?.city ?? null,
-          province: lvl.location.address?.province ?? null,
-          provinceCode: lvl.location.address?.provinceCode ?? null,
+          phone: restData.phone ?? null,
+          address1: restData.address1 ?? lvl.location.address?.address1 ?? null,
+          address2: restData.address2 ?? lvl.location.address?.address2 ?? null,
+          city: restData.city ?? lvl.location.address?.city ?? null,
+          province: restData.province ?? lvl.location.address?.province ?? null,
+          provinceCode: restData.provinceCode ?? lvl.location.address?.provinceCode ?? null,
           countryCode: lvl.location.address?.countryCode ?? null,
-          zip: lvl.location.address?.zip ?? null,
+          zip: restData.zip ?? lvl.location.address?.zip ?? null,
         };
       })
       .filter((loc) => loc.available > 0);
