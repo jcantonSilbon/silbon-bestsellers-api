@@ -84,7 +84,6 @@ type InventoryLevelNode = {
   location: {
     id: string;
     name: string;
-    phone?: string | null;
     address?: {
       address1?: string | null;
       address2?: string | null;
@@ -191,7 +190,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
                   location {
                     id
                     name
-                    phone
+                    
                     address {
                       address1
                       address2
@@ -246,7 +245,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
                     location {
                       id
                       name
-                      phone
+                     
                       address {
                         address1
                         address2
@@ -293,7 +292,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
           id: lvl.location.id,
           name: lvl.location.name,
           available: availableQty?.quantity ?? 0,
-          phone: lvl.location.phone ?? null,
           address1: lvl.location.address?.address1 ?? null,
           address2: lvl.location.address?.address2 ?? null,
           city: lvl.location.address?.city ?? null,
@@ -304,6 +302,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         };
       })
       .filter((loc) => loc.available > 0);
+
 
 
     // Filtro por provincias si viene ?province=SE,CO,...
