@@ -202,7 +202,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             id
             sku
             inventoryItem {
-              inventoryLevels(first: 100) {
+              inventoryLevels(first: 250) {
                 edges {
                   node {
                     quantities(names: ["available"]) {
@@ -257,7 +257,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             edges {
               node {
                 sku
-                inventoryLevels(first: 100) {
+                inventoryLevels(first: 250) {
                   edges {
                     node {
                       quantities(names: ["available"]) {
