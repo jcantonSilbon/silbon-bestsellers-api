@@ -62,7 +62,7 @@ async function adminGQL<
 }
 
 /* ==================== S E G M E N T O S ==================== */
-type Segment = "man" | "woman" | "teens" | "kids";
+type Segment = "man" | "woman" | "teens" | "kids" | "girl";
 
 function parseSegments(url: URL): Set<Segment> {
   const single = (url.searchParams.get("segment") || "").toLowerCase().trim();
@@ -77,10 +77,12 @@ function parseSegments(url: URL): Set<Segment> {
     if (v === "man" || v === "hombre") s.add("man");
     if (v === "woman" || v === "mujer") s.add("woman");
     if (v === "teens") s.add("teens");
-    if (v === "kids" || v === "niños" || v === "ninos") s.add("kids");
+    if (v === "kids" || v === "niño" || v === "nino" || v === "boy") s.add("kids"); // ⬅️ ACTUALIZADO
+    if (v === "girl" || v === "niña" || v === "nina") s.add("girl"); // ⬅️ NUEVO
   }
   return s;
 }
+
 
 function norm(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
@@ -120,13 +122,15 @@ function passSegments(
     man: ["gender:man", "gender:men", "man", "men", "caballero", "mens", "hombre", "hombres"] as const,
     woman: ["gender:woman", "woman", "women", "mujer", "mujeres", "dama", "womens", "ladies", "fem"] as const,
     teens: ["segment:teens", "teen", "teens", "juvenil", "adolesc"] as const,
-    kids: ["segment:kids", "kid", "kids", "niño", "nino", "niña", "nina", "infantil", "children", "child"] as const,
+    kids: ["segment:kids", "kids", "kid", "niño", "nino", "niños", "ninos", "boy", "boys"] as const,
+    girl: ["segment:girl", "girl", "girls", "niña", "nina", "niñas", "ninas"] as const, // ⬅️ NUEVO
   };
 
   const okMan = hasAnyToken(tagsTokens, TOK.man) || hasAnyToken(ptTokens, TOK.man);
   const okWoman = hasAnyToken(tagsTokens, TOK.woman) || hasAnyToken(ptTokens, TOK.woman);
   const okTeens = hasAnyToken(tagsTokens, TOK.teens) || hasAnyToken(ptTokens, TOK.teens);
   const okKids = hasAnyToken(tagsTokens, TOK.kids) || hasAnyToken(ptTokens, TOK.kids);
+  const okGirl = hasAnyToken(tagsTokens, TOK.girl) || hasAnyToken(ptTokens, TOK.girl); // ⬅️ NUEVO
 
   const wantsMan = segments.has("man");
   const wantsWoman = segments.has("woman");
@@ -137,8 +141,12 @@ function passSegments(
 
   if (segments.has("teens") && okTeens) return true;
   if (segments.has("kids") && okKids) return true;
+  if (segments.has("girl") && okGirl) return true; // ⬅️ NUEVO
 
   return false;
+
+
+  
 }
 
 /* ======================== C A C H É ======================== */
@@ -165,10 +173,10 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
     method: "POST",
     headers: { Authorization: `Bearer ${R_TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify({ value: JSON.stringify(value), EX: ttlSec }),
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
-const CACHE_VER = "v5"; // ⬅️ CAMBIADO
+const CACHE_VER = "v6"; // ⬅️ CAMBIADO
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, channel: string) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
 }
@@ -276,7 +284,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       const data = await adminGQL<OrdersPage>(ORDERS_QUERY, { cursor });
       const { nodes, pageInfo } = data.orders;
       pages++;
-      
+
       for (const o of nodes) {
         // ⬅️ NUEVO: Excluir cancelados
         if (o.cancelledAt) {
@@ -315,7 +323,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     if (!qtyByProductId.size) {
       mem.set(key, { at: now, value: resp });
-      redisSet(key, resp, MEM_TTL).catch(() => {});
+      redisSet(key, resp, MEM_TTL).catch(() => { });
       return new Response(JSON.stringify(resp), { headers: corsHeaders(origin) });
     }
 
@@ -331,7 +339,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     resp.handles = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter((h): h is string => Boolean(h));
 
     mem.set(key, { at: now, value: resp });
-    redisSet(key, resp, MEM_TTL).catch(() => {});
+    redisSet(key, resp, MEM_TTL).catch(() => { });
 
     return new Response(JSON.stringify(resp), { headers: corsHeaders(origin) });
   } catch (e: unknown) {
