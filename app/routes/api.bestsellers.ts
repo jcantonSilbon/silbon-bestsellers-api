@@ -9,8 +9,8 @@ const EXTRA = (process.env.CORS_EXTRA_ORIGINS || "")
 const ALLOWED_ORIGINS = new Set<string>([
   "https://www.silbonshop.com",
   "https://silbonshop.com",
-  "https://silbon-store.myshopify.com", // preview
-  "https://admin.shopify.com", // editor
+  "https://silbon-store.myshopify.com",
+  "https://admin.shopify.com",
   ...EXTRA,
 ]);
 
@@ -41,8 +41,8 @@ async function adminGQL<
   TData = unknown,
   TVars extends Record<string, unknown> = Record<string, unknown>
 >(query: string, variables?: TVars): Promise<TData> {
-  const shop = process.env.SHOPIFY_SHOP_DOMAIN!; // p.ej. silbon-store.myshopify.com
-  const token = process.env.SHOPIFY_ADMIN_TOKEN!; // Admin access token
+  const shop = process.env.SHOPIFY_SHOP_DOMAIN!;
+  const token = process.env.SHOPIFY_ADMIN_TOKEN!;
   const url = `https://${shop}/admin/api/2024-10/graphql.json`;
 
   const r = await fetch(url, {
@@ -79,10 +79,9 @@ function parseSegments(url: URL): Set<Segment> {
     if (v === "teens") s.add("teens");
     if (v === "kids" || v === "niños" || v === "ninos") s.add("kids");
   }
-  return s; // vacío => sin filtro
+  return s;
 }
 
-// helpers de normalizado y tokens
 function norm(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
@@ -100,14 +99,12 @@ function hasAnyToken(hay: Set<string>, needles: readonly string[]) {
   return false;
 }
 
-/** Evita falsos positivos woman→man, y respeta `gender:*` si existe */
 function passSegments(
   p: { tags?: string[]; productType?: string },
   segments: Set<Segment>
 ) {
   if (!segments.size) return true;
 
-  // 1) Si hay tag explícito gender:*
   const genderTag = (p.tags || [])
     .map((t) => t.toLowerCase().trim())
     .find((t) => t.startsWith("gender:"));
@@ -116,7 +113,6 @@ function passSegments(
     return segments.has(g);
   }
 
-  // 2) Matching por token exacto
   const tagsTokens = tokenSet(p.tags || []);
   const ptTokens = tokenSet(p.productType || "");
 
@@ -132,17 +128,13 @@ function passSegments(
   const okTeens = hasAnyToken(tagsTokens, TOK.teens) || hasAnyToken(ptTokens, TOK.teens);
   const okKids = hasAnyToken(tagsTokens, TOK.kids) || hasAnyToken(ptTokens, TOK.kids);
 
-  // 3) Exclusividad entre man/woman cuando sólo marcan uno
   const wantsMan = segments.has("man");
   const wantsWoman = segments.has("woman");
 
   if (wantsMan && !wantsWoman) return okMan && !okWoman;
   if (wantsWoman && !wantsMan) return okWoman && !okMan;
-
-  // 4) Si marcan ambos, vale cualquiera
   if (wantsMan && wantsWoman && (okMan || okWoman)) return true;
 
-  // 5) Teens/Kids combinables
   if (segments.has("teens") && okTeens) return true;
   if (segments.has("kids") && okKids) return true;
 
@@ -152,7 +144,7 @@ function passSegments(
 /* ======================== C A C H É ======================== */
 type Resp = { handles: string[]; meta?: Record<string, unknown> };
 
-const MEM_TTL = Number(process.env.BESTSELLERS_TTL || 900); // segundos
+const MEM_TTL = Number(process.env.BESTSELLERS_TTL || 900);
 const mem = new Map<string, { at: number; value: Resp }>();
 
 const R_URL = process.env.UPSTASH_REDIS_REST_URL;
@@ -176,9 +168,9 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
   }).catch(() => {});
 }
 
-const CACHE_VER = "v3";
-function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number) {
-  return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}`;
+const CACHE_VER = "v5"; // ⬅️ CAMBIADO
+function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, channel: string) {
+  return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
 }
 
 /* ======================= L O A D E R ======================= */
@@ -191,12 +183,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const segments = parseSegments(url);
   const debug = url.searchParams.get("debug") === "1";
   const nocache = url.searchParams.get("nocache") === "1";
+  const channelFilter = url.searchParams.get("channel") || "all"; // ⬅️ NUEVO: "online" o "all"
 
   // Fechas
   const toDate = url.searchParams.get("to") ? new Date(url.searchParams.get("to")!) : new Date();
   const fromDate = url.searchParams.get("from")
     ? new Date(url.searchParams.get("from")!)
-    : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    : new Date(Date.now() - 7 * 24 * 3600 * 1000); // ⬅️ CAMBIADO a 7 días
 
   const toISO = toDate.toISOString();
   const fromISO = fromDate.toISOString();
@@ -207,12 +200,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       shopFromEnv: process.env.SHOPIFY_SHOP_DOMAIN,
       range: { from: fromISO, to: toISO },
       segments: [...segments],
+      channelFilter, // ⬅️ NUEVO
       step: "start",
     };
   }
 
   // Caché
-  const key = k(fromISO, toISO, segments, limit);
+  const key = k(fromISO, toISO, segments, limit, channelFilter); // ⬅️ ACTUALIZADO
   const now = Date.now();
 
   if (!nocache) {
@@ -230,7 +224,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 
   try {
-    // Smokes (tipos mínimos)
     type ProdSmoke = { products: { nodes: Array<{ id: string; handle: string }> } };
     type OrdSmoke = { orders: { nodes: Array<{ id: string }> } };
 
@@ -249,6 +242,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
         orders(first: 100, after:$cursor, query: "${searchBase.replace(/"/g, '\\"')}") {
           pageInfo { hasNextPage endCursor }
           nodes {
+            sourceName
+            cancelledAt
             lineItems(first: 100) {
               nodes {
                 quantity
@@ -263,6 +258,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       orders: {
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: Array<{
+          sourceName?: string; // ⬅️ NUEVO
+          cancelledAt?: string; // ⬅️ NUEVO
           lineItems: { nodes: Array<{ quantity: number; product: { id: string; handle: string; tags?: string[]; productType?: string } | null }> };
         }>;
       };
@@ -271,13 +268,32 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const qtyByProductId = new Map<string, number>();
     let cursor: string | null = null;
     let pages = 0,
-      scanned = 0;
+      scanned = 0,
+      skippedByChannel = 0, // ⬅️ NUEVO
+      skippedByCancelled = 0; // ⬅️ NUEVO
 
     do {
       const data = await adminGQL<OrdersPage>(ORDERS_QUERY, { cursor });
       const { nodes, pageInfo } = data.orders;
       pages++;
+      
       for (const o of nodes) {
+        // ⬅️ NUEVO: Excluir cancelados
+        if (o.cancelledAt) {
+          skippedByCancelled++;
+          continue;
+        }
+
+        // ⬅️ NUEVO: Filtrar por canal si se solicita
+        if (channelFilter === "online") {
+          const source = (o.sourceName || "").toLowerCase();
+          // Shopify puede devolver "web", "online store", etc.
+          if (!source.includes("web") && !source.includes("online")) {
+            skippedByChannel++;
+            continue;
+          }
+        }
+
         for (const li of o.lineItems.nodes) {
           scanned++;
           const p = li.product;
@@ -293,6 +309,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       (resp.meta ??= {}).pagesFetched = pages;
       (resp.meta ??= {}).lineItemsScanned = scanned;
       (resp.meta ??= {}).uniqueProducts = qtyByProductId.size;
+      (resp.meta ??= {}).skippedByChannel = skippedByChannel; // ⬅️ NUEVO
+      (resp.meta ??= {}).skippedByCancelled = skippedByCancelled; // ⬅️ NUEVO
     }
 
     if (!qtyByProductId.size) {
@@ -312,7 +330,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     resp.handles = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter((h): h is string => Boolean(h));
 
-    // Cache write
     mem.set(key, { at: now, value: resp });
     redisSet(key, resp, MEM_TTL).catch(() => {});
 
