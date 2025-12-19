@@ -199,7 +199,7 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
   }).catch(() => {});
 }
 
-const CACHE_VER = "v4"; // ⬅️ bump por cambio de lógica de fechas/default
+const CACHE_VER = "v5"; // ⬅️ bump por cambio de lógica de fechas/default
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}`;
 }
@@ -266,7 +266,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       (resp.meta ??= {}).ordersSmoke = ordersSmoke?.orders?.nodes?.length ?? 0;
     }
 
-    const searchBase = `financial_status:paid created_at:>=${fromISO} created_at:<=${toISO}`;
+    const searchBase = `financial_status:paid source_name:"online store" -status:cancelled created_at:>=${fromISO} created_at:<=${toISO}`;
     const ORDERS_QUERY = `
       query Orders($cursor:String) {
         orders(first: 100, after:$cursor, query: "${searchBase.replace(/"/g, '\\"')}") {
