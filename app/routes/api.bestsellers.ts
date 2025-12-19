@@ -40,16 +40,18 @@ type GraphQLResponse<T> = { data?: T; errors?: GQLError[] };
 async function adminGQL<
   TData = unknown,
   TVars extends Record<string, unknown> = Record<string, unknown>
->(query: string, variables?: TVars, signal?: AbortSignal): Promise<TData> {
-  const shop = process.env.SHOPIFY_SHOP_DOMAIN!;
-  const token = process.env.SHOPIFY_ADMIN_TOKEN!;
+>(query: string, variables?: TVars): Promise<TData> {
+  const shop = process.env.SHOPIFY_SHOP_DOMAIN!; // p.ej. silbon-store.myshopify.com
+  const token = process.env.SHOPIFY_ADMIN_TOKEN!; // Admin access token
   const url = `https://${shop}/admin/api/2024-10/graphql.json`;
 
   const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token,
+    },
     body: JSON.stringify({ query, variables }),
-    signal,
   });
 
   const json = (await r.json().catch(() => ({}))) as GraphQLResponse<TData>;
@@ -57,20 +59,6 @@ async function adminGQL<
     throw { status: r.status, statusText: r.statusText, errors: json.errors, body: json } as const;
   }
   return (json.data as TData) ?? (null as unknown as TData);
-}
-
-async function adminGQLWithTimeout<TData, TVars extends Record<string, unknown> = Record<string, unknown>>(
-  query: string,
-  variables?: TVars,
-  ms = 15000
-) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), ms);
-  try {
-    return await adminGQL<TData, TVars>(query, variables, ac.signal);
-  } finally {
-    clearTimeout(t);
-  }
 }
 
 /* ==================== S E G M E N T O S ==================== */
@@ -113,14 +101,22 @@ function hasAnyToken(hay: Set<string>, needles: readonly string[]) {
 }
 
 /** Evita falsos positivos woman→man, y respeta `gender:*` si existe */
-function passSegments(p: { tags?: string[]; productType?: string }, segments: Set<Segment>) {
+function passSegments(
+  p: { tags?: string[]; productType?: string },
+  segments: Set<Segment>
+) {
   if (!segments.size) return true;
 
+  // 1) Si hay tag explícito gender:*
   const genderTag = (p.tags || [])
     .map((t) => t.toLowerCase().trim())
     .find((t) => t.startsWith("gender:"));
-  if (genderTag) return segments.has(genderTag.replace("gender:", "") as Segment);
+  if (genderTag) {
+    const g = genderTag.replace("gender:", "") as Segment;
+    return segments.has(g);
+  }
 
+  // 2) Matching por token exacto
   const tagsTokens = tokenSet(p.tags || []);
   const ptTokens = tokenSet(p.productType || "");
 
@@ -136,40 +132,21 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   const okTeens = hasAnyToken(tagsTokens, TOK.teens) || hasAnyToken(ptTokens, TOK.teens);
   const okKids = hasAnyToken(tagsTokens, TOK.kids) || hasAnyToken(ptTokens, TOK.kids);
 
+  // 3) Exclusividad entre man/woman cuando sólo marcan uno
   const wantsMan = segments.has("man");
   const wantsWoman = segments.has("woman");
 
   if (wantsMan && !wantsWoman) return okMan && !okWoman;
   if (wantsWoman && !wantsMan) return okWoman && !okMan;
+
+  // 4) Si marcan ambos, vale cualquiera
   if (wantsMan && wantsWoman && (okMan || okWoman)) return true;
 
+  // 5) Teens/Kids combinables
   if (segments.has("teens") && okTeens) return true;
   if (segments.has("kids") && okKids) return true;
 
   return false;
-}
-
-/* ===================== F E C H A S  U T C  (FIX) ===================== */
-// Parse robusto:
-// - Si viene "YYYY-MM-DD" => lo interpretamos como UTC (no local)
-// - Si viene ISO completo => new Date() OK
-function parseDateParam(raw: string | null): Date | null {
-  if (!raw) return null;
-  const s = raw.trim();
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (m) {
-    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
-    return new Date(Date.UTC(y, mo - 1, d));
-  }
-  const dt = new Date(s);
-  return Number.isNaN(dt.getTime()) ? null : dt;
-}
-
-function startOfDayUTC(d: Date) {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-}
-function endOfDayUTC(d: Date) {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
 }
 
 /* ======================== C A C H É ======================== */
@@ -199,7 +176,7 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
   }).catch(() => {});
 }
 
-const CACHE_VER = "v4"; // ⬅️ bump por cambio de lógica de fechas/default
+const CACHE_VER = "v3";
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}`;
 }
@@ -215,15 +192,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const debug = url.searchParams.get("debug") === "1";
   const nocache = url.searchParams.get("nocache") === "1";
 
-  // ✅ Fechas (bien):
-  // default: últimos 7 días
-  const toRaw = parseDateParam(url.searchParams.get("to")) ?? new Date();
-  const fromRaw =
-    parseDateParam(url.searchParams.get("from")) ?? new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  // Fechas
+  const toDate = url.searchParams.get("to") ? new Date(url.searchParams.get("to")!) : new Date();
+  const fromDate = url.searchParams.get("from")
+    ? new Date(url.searchParams.get("from")!)
+    : new Date(Date.now() - 30 * 24 * 3600 * 1000);
 
-  // normalizamos a límites del día UTC
-  const toISO = endOfDayUTC(toRaw).toISOString();
-  const fromISO = startOfDayUTC(fromRaw).toISOString();
+  const toISO = toDate.toISOString();
+  const fromISO = fromDate.toISOString();
 
   const resp: Resp = { handles: [] };
   if (debug) {
@@ -254,18 +230,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 
   try {
-    // Smokes
+    // Smokes (tipos mínimos)
     type ProdSmoke = { products: { nodes: Array<{ id: string; handle: string }> } };
     type OrdSmoke = { orders: { nodes: Array<{ id: string }> } };
 
-    const prodSmoke = await adminGQLWithTimeout<ProdSmoke>(`query { products(first:1){ nodes { id handle } } }`, undefined, 10000);
-    const ordersSmoke = await adminGQLWithTimeout<OrdSmoke>(`query { orders(first:1){ nodes { id } } }`, undefined, 10000);
+    const prodSmoke = await adminGQL<ProdSmoke>(`query { products(first:1){ nodes { id handle } } }`);
+    const ordersSmoke = await adminGQL<OrdSmoke>(`query { orders(first:1){ nodes { id } } }`);
 
     if (debug) {
       (resp.meta ??= {}).prodSmoke = prodSmoke?.products?.nodes?.length ?? 0;
       (resp.meta ??= {}).ordersSmoke = ordersSmoke?.orders?.nodes?.length ?? 0;
     }
 
+    // Query real
     const searchBase = `financial_status:paid created_at:>=${fromISO} created_at:<=${toISO}`;
     const ORDERS_QUERY = `
       query Orders($cursor:String) {
@@ -293,10 +270,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     const qtyByProductId = new Map<string, number>();
     let cursor: string | null = null;
-    let pages = 0, scanned = 0;
+    let pages = 0,
+      scanned = 0;
 
     do {
-      const data = await adminGQLWithTimeout<OrdersPage>(ORDERS_QUERY, { cursor }, 15000);
+      const data = await adminGQL<OrdersPage>(ORDERS_QUERY, { cursor });
       const { nodes, pageInfo } = data.orders;
       pages++;
       for (const o of nodes) {
@@ -330,10 +308,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle } } }`;
     type NodesResp = { nodes: Array<{ id?: string; handle?: string } | null> };
-    const nd = await adminGQLWithTimeout<NodesResp>(NODES_QUERY, { ids: topIds }, 10000);
+    const nd = await adminGQL<NodesResp>(NODES_QUERY, { ids: topIds });
 
     resp.handles = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter((h): h is string => Boolean(h));
 
+    // Cache write
     mem.set(key, { at: now, value: resp });
     redisSet(key, resp, MEM_TTL).catch(() => {});
 
