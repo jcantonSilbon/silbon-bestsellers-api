@@ -16,9 +16,7 @@ const ALLOWED_ORIGINS = new Set<string>([
 
 function isAllowedOrigin(origin: string | null) {
   if (!origin) return false;
-  for (const o of ALLOWED_ORIGINS) {
-    if (origin.toLowerCase().startsWith(o.toLowerCase())) return true;
-  }
+  for (const o of ALLOWED_ORIGINS) if (origin.toLowerCase().startsWith(o.toLowerCase())) return true;
   return false;
 }
 
@@ -144,19 +142,40 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   return false;
 }
 
-/* ======================== F E C H A S ======================== */
-function parseDateParam(v: string | null, kind: "from" | "to"): Date | null {
-  if (!v) return null;
+/* ======================== F E C H A S (FIX) ======================== */
+// YYYY-MM-DD => UTC start/end of day
+function parseDateParamUTC(dateStr: string, endOfDay: boolean) {
+  if (dateStr.includes("T")) return new Date(dateStr);
 
-  // Si viene como YYYY-MM-DD, el bug era que "to" quedaba a 00:00:00Z.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
-    const d = new Date(v + "T00:00:00.000Z");
-    if (kind === "to") d.setUTCHours(23, 59, 59, 999); // ✅ fin de día
-    return d;
-  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!m) return new Date(dateStr);
 
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+
+  return endOfDay
+    ? new Date(Date.UTC(y, mo, d, 23, 59, 59, 999))
+    : new Date(Date.UTC(y, mo, d, 0, 0, 0, 0));
+}
+
+/* ======================== C A N A L (FIX) ======================== */
+function isOnlineSource(sourceName?: string | null) {
+  const s = String(sourceName || "").toLowerCase().trim();
+
+  // Si Shopify no lo manda, NO filtres (fallback seguro)
+  if (!s) return true;
+
+  // POS fuera
+  if (s.includes("pos")) return false;
+
+  // Online: Shopify devuelve muchísimas veces "checkout" o "shopify"
+  return (
+    s.includes("web") ||
+    s.includes("online") ||
+    s.includes("checkout") ||
+    s.includes("shopify")
+  );
 }
 
 /* ======================== C A C H É ======================== */
@@ -174,9 +193,20 @@ async function redisGet(key: string): Promise<Resp | null> {
     headers: { Authorization: `Bearer ${R_TOKEN}` },
   });
   if (!r.ok) return null;
-  const j = (await r.json().catch(() => null)) as { result?: string } | null;
-  return j?.result ? (JSON.parse(j.result) as Resp) : null;
+
+  const j = (await r.json().catch(() => null)) as { result?: string; value?: string } | null;
+
+  // Upstash puede devolver "result" o "value"
+  const packed = j?.result || j?.value;
+  if (!packed) return null;
+
+  try {
+    return JSON.parse(packed) as Resp;
+  } catch {
+    return null;
+  }
 }
+
 async function redisSet(key: string, value: Resp, ttlSec: number) {
   if (!R_URL || !R_TOKEN) return;
   await fetch(`${R_URL}/set/${encodeURIComponent(key)}`, {
@@ -186,7 +216,7 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
   }).catch(() => {});
 }
 
-const CACHE_VER = "v7"; // ✅ BUMP para invalidar cachés anteriores
+const CACHE_VER = "v8";
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, channel: string) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
 }
@@ -203,13 +233,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const segments = parseSegments(url);
   const debug = url.searchParams.get("debug") === "1";
   const nocache = url.searchParams.get("nocache") === "1";
-  const channelFilter = url.searchParams.get("channel") || "all";
+  const channelFilter = (url.searchParams.get("channel") || "all").toLowerCase();
 
-  // ✅ Fechas corregidas
-  const toDate = parseDateParam(url.searchParams.get("to"), "to") ?? new Date();
-  const fromDate =
-    parseDateParam(url.searchParams.get("from"), "from") ??
-    new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  // =========================
+  // Fechas (FIX)
+  // =========================
+  const toParam = url.searchParams.get("to");
+  const fromParam = url.searchParams.get("from");
+
+  const toDate = toParam ? parseDateParamUTC(toParam, true) : new Date();
+  const fromDate = fromParam
+    ? parseDateParamUTC(fromParam, false)
+    : new Date(Date.now() - 7 * 24 * 3600 * 1000);
 
   const toISO = toDate.toISOString();
   const fromISO = fromDate.toISOString();
@@ -225,7 +260,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
     };
   }
 
+  // =========================
   // Caché
+  // =========================
   const key = k(fromISO, toISO, segments, limit, channelFilter);
   const now = Date.now();
 
@@ -279,8 +316,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       orders: {
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: Array<{
-          sourceName?: string;
-          cancelledAt?: string;
+          sourceName?: string | null;
+          cancelledAt?: string | null;
           lineItems: {
             nodes: Array<{
               quantity: number;
@@ -293,6 +330,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     const qtyByProductId = new Map<string, number>();
     let cursor: string | null = null;
+
     let pages = 0,
       scanned = 0,
       skippedByChannel = 0,
@@ -304,16 +342,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
       pages++;
 
       for (const o of nodes) {
+        // Excluir cancelados
         if (o.cancelledAt) {
           skippedByCancelled++;
           continue;
         }
 
-        // ✅ Filtro online más robusto (evita falsos negativos por sourceName raro)
+        // Canal online (FIX robusto)
         if (channelFilter === "online") {
-          const source = (o.sourceName || "").toLowerCase();
-          // Excluimos POS/retail. El resto lo consideramos online-ish.
-          if (source.includes("pos") || source.includes("retail")) {
+          if (!isOnlineSource(o.sourceName)) {
             skippedByChannel++;
             continue;
           }
