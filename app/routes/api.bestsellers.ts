@@ -16,7 +16,9 @@ const ALLOWED_ORIGINS = new Set<string>([
 
 function isAllowedOrigin(origin: string | null) {
   if (!origin) return false;
-  for (const o of ALLOWED_ORIGINS) if (origin.toLowerCase().startsWith(o.toLowerCase())) return true;
+  for (const o of ALLOWED_ORIGINS) {
+    if (origin.toLowerCase().startsWith(o.toLowerCase())) return true;
+  }
   return false;
 }
 
@@ -77,12 +79,11 @@ function parseSegments(url: URL): Set<Segment> {
     if (v === "man" || v === "hombre") s.add("man");
     if (v === "woman" || v === "mujer") s.add("woman");
     if (v === "teens") s.add("teens");
-    if (v === "kids" || v === "niño" || v === "nino" || v === "boy") s.add("kids"); // ⬅️ ACTUALIZADO
-    if (v === "girl" || v === "niña" || v === "nina") s.add("girl"); // ⬅️ NUEVO
+    if (v === "kids" || v === "niño" || v === "nino" || v === "boy") s.add("kids");
+    if (v === "girl" || v === "niña" || v === "nina") s.add("girl");
   }
   return s;
 }
-
 
 function norm(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
@@ -101,10 +102,7 @@ function hasAnyToken(hay: Set<string>, needles: readonly string[]) {
   return false;
 }
 
-function passSegments(
-  p: { tags?: string[]; productType?: string },
-  segments: Set<Segment>
-) {
+function passSegments(p: { tags?: string[]; productType?: string }, segments: Set<Segment>) {
   if (!segments.size) return true;
 
   const genderTag = (p.tags || [])
@@ -123,14 +121,14 @@ function passSegments(
     woman: ["gender:woman", "woman", "women", "mujer", "mujeres", "dama", "womens", "ladies", "fem"] as const,
     teens: ["segment:teens", "teen", "teens", "juvenil", "adolesc"] as const,
     kids: ["segment:kids", "kids", "kid", "niño", "nino", "niños", "ninos", "boy", "boys"] as const,
-    girl: ["segment:girl", "girl", "girls", "niña", "nina", "niñas", "ninas"] as const, // ⬅️ NUEVO
+    girl: ["segment:girl", "girl", "girls", "niña", "nina", "niñas", "ninas"] as const,
   };
 
   const okMan = hasAnyToken(tagsTokens, TOK.man) || hasAnyToken(ptTokens, TOK.man);
   const okWoman = hasAnyToken(tagsTokens, TOK.woman) || hasAnyToken(ptTokens, TOK.woman);
   const okTeens = hasAnyToken(tagsTokens, TOK.teens) || hasAnyToken(ptTokens, TOK.teens);
   const okKids = hasAnyToken(tagsTokens, TOK.kids) || hasAnyToken(ptTokens, TOK.kids);
-  const okGirl = hasAnyToken(tagsTokens, TOK.girl) || hasAnyToken(ptTokens, TOK.girl); // ⬅️ NUEVO
+  const okGirl = hasAnyToken(tagsTokens, TOK.girl) || hasAnyToken(ptTokens, TOK.girl);
 
   const wantsMan = segments.has("man");
   const wantsWoman = segments.has("woman");
@@ -141,12 +139,24 @@ function passSegments(
 
   if (segments.has("teens") && okTeens) return true;
   if (segments.has("kids") && okKids) return true;
-  if (segments.has("girl") && okGirl) return true; // ⬅️ NUEVO
+  if (segments.has("girl") && okGirl) return true;
 
   return false;
+}
 
+/* ======================== F E C H A S ======================== */
+function parseDateParam(v: string | null, kind: "from" | "to"): Date | null {
+  if (!v) return null;
 
-  
+  // Si viene como YYYY-MM-DD, el bug era que "to" quedaba a 00:00:00Z.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const d = new Date(v + "T00:00:00.000Z");
+    if (kind === "to") d.setUTCHours(23, 59, 59, 999); // ✅ fin de día
+    return d;
+  }
+
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 /* ======================== C A C H É ======================== */
@@ -173,10 +183,10 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
     method: "POST",
     headers: { Authorization: `Bearer ${R_TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify({ value: JSON.stringify(value), EX: ttlSec }),
-  }).catch(() => { });
+  }).catch(() => {});
 }
 
-const CACHE_VER = "v6"; // ⬅️ CAMBIADO
+const CACHE_VER = "v7"; // ✅ BUMP para invalidar cachés anteriores
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, channel: string) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
 }
@@ -184,20 +194,22 @@ function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, ch
 /* ======================= L O A D E R ======================= */
 export async function loader({ request }: LoaderFunctionArgs) {
   const origin = request.headers.get("Origin");
-  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  }
 
   const url = new URL(request.url);
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "16", 10), 60);
   const segments = parseSegments(url);
   const debug = url.searchParams.get("debug") === "1";
   const nocache = url.searchParams.get("nocache") === "1";
-  const channelFilter = url.searchParams.get("channel") || "all"; // ⬅️ NUEVO: "online" o "all"
+  const channelFilter = url.searchParams.get("channel") || "all";
 
-  // Fechas
-  const toDate = url.searchParams.get("to") ? new Date(url.searchParams.get("to")!) : new Date();
-  const fromDate = url.searchParams.get("from")
-    ? new Date(url.searchParams.get("from")!)
-    : new Date(Date.now() - 7 * 24 * 3600 * 1000); // ⬅️ CAMBIADO a 7 días
+  // ✅ Fechas corregidas
+  const toDate = parseDateParam(url.searchParams.get("to"), "to") ?? new Date();
+  const fromDate =
+    parseDateParam(url.searchParams.get("from"), "from") ??
+    new Date(Date.now() - 7 * 24 * 3600 * 1000);
 
   const toISO = toDate.toISOString();
   const fromISO = fromDate.toISOString();
@@ -208,13 +220,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       shopFromEnv: process.env.SHOPIFY_SHOP_DOMAIN,
       range: { from: fromISO, to: toISO },
       segments: [...segments],
-      channelFilter, // ⬅️ NUEVO
+      channelFilter,
       step: "start",
     };
   }
 
   // Caché
-  const key = k(fromISO, toISO, segments, limit, channelFilter); // ⬅️ ACTUALIZADO
+  const key = k(fromISO, toISO, segments, limit, channelFilter);
   const now = Date.now();
 
   if (!nocache) {
@@ -223,6 +235,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       if (debug) (m.value.meta ??= {}).cache = "memory";
       return new Response(JSON.stringify(m.value), { headers: corsHeaders(origin) });
     }
+
     const rHit = await redisGet(key);
     if (rHit) {
       if (debug) (rHit.meta ??= {}).cache = "redis";
@@ -243,8 +256,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       (resp.meta ??= {}).ordersSmoke = ordersSmoke?.orders?.nodes?.length ?? 0;
     }
 
-    // Query real
     const searchBase = `financial_status:paid created_at:>=${fromISO} created_at:<=${toISO}`;
+
     const ORDERS_QUERY = `
       query Orders($cursor:String) {
         orders(first: 100, after:$cursor, query: "${searchBase.replace(/"/g, '\\"')}") {
@@ -266,9 +279,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
       orders: {
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: Array<{
-          sourceName?: string; // ⬅️ NUEVO
-          cancelledAt?: string; // ⬅️ NUEVO
-          lineItems: { nodes: Array<{ quantity: number; product: { id: string; handle: string; tags?: string[]; productType?: string } | null }> };
+          sourceName?: string;
+          cancelledAt?: string;
+          lineItems: {
+            nodes: Array<{
+              quantity: number;
+              product: { id: string; handle: string; tags?: string[]; productType?: string } | null;
+            }>;
+          };
         }>;
       };
     };
@@ -277,8 +295,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     let cursor: string | null = null;
     let pages = 0,
       scanned = 0,
-      skippedByChannel = 0, // ⬅️ NUEVO
-      skippedByCancelled = 0; // ⬅️ NUEVO
+      skippedByChannel = 0,
+      skippedByCancelled = 0;
 
     do {
       const data = await adminGQL<OrdersPage>(ORDERS_QUERY, { cursor });
@@ -286,17 +304,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
       pages++;
 
       for (const o of nodes) {
-        // ⬅️ NUEVO: Excluir cancelados
         if (o.cancelledAt) {
           skippedByCancelled++;
           continue;
         }
 
-        // ⬅️ NUEVO: Filtrar por canal si se solicita
+        // ✅ Filtro online más robusto (evita falsos negativos por sourceName raro)
         if (channelFilter === "online") {
           const source = (o.sourceName || "").toLowerCase();
-          // Shopify puede devolver "web", "online store", etc.
-          if (!source.includes("web") && !source.includes("online")) {
+          // Excluimos POS/retail. El resto lo consideramos online-ish.
+          if (source.includes("pos") || source.includes("retail")) {
             skippedByChannel++;
             continue;
           }
@@ -310,6 +327,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
           qtyByProductId.set(p.id, (qtyByProductId.get(p.id) || 0) + li.quantity);
         }
       }
+
       cursor = pageInfo.hasNextPage ? pageInfo.endCursor : null;
     } while (cursor);
 
@@ -317,13 +335,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       (resp.meta ??= {}).pagesFetched = pages;
       (resp.meta ??= {}).lineItemsScanned = scanned;
       (resp.meta ??= {}).uniqueProducts = qtyByProductId.size;
-      (resp.meta ??= {}).skippedByChannel = skippedByChannel; // ⬅️ NUEVO
-      (resp.meta ??= {}).skippedByCancelled = skippedByCancelled; // ⬅️ NUEVO
+      (resp.meta ??= {}).skippedByChannel = skippedByChannel;
+      (resp.meta ??= {}).skippedByCancelled = skippedByCancelled;
     }
 
     if (!qtyByProductId.size) {
       mem.set(key, { at: now, value: resp });
-      redisSet(key, resp, MEM_TTL).catch(() => { });
+      redisSet(key, resp, MEM_TTL).catch(() => {});
       return new Response(JSON.stringify(resp), { headers: corsHeaders(origin) });
     }
 
@@ -334,12 +352,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle } } }`;
     type NodesResp = { nodes: Array<{ id?: string; handle?: string } | null> };
+
     const nd = await adminGQL<NodesResp>(NODES_QUERY, { ids: topIds });
 
-    resp.handles = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter((h): h is string => Boolean(h));
+    resp.handles = (nd.nodes || [])
+      .filter(Boolean)
+      .map((n) => n!.handle)
+      .filter((h): h is string => Boolean(h));
 
     mem.set(key, { at: now, value: resp });
-    redisSet(key, resp, MEM_TTL).catch(() => { });
+    redisSet(key, resp, MEM_TTL).catch(() => {});
 
     return new Response(JSON.stringify(resp), { headers: corsHeaders(origin) });
   } catch (e: unknown) {
