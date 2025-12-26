@@ -198,16 +198,24 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const resp: Resp = { handles: [] };
 
   // 1) Intentar SNAPSHOT primero (ultrarrápido)
+   // 1) Intentar SNAPSHOT primero (ultrarrápido)
   if (useSnapshot) {
     const sKey = snapKey(segments, limit);
     const snap = await redisGet(sKey);
+
     if (snap && Array.isArray(snap.handles)) {
       if (debug) (snap.meta ??= {}).source = "snapshot";
       return new Response(JSON.stringify(snap), {
         headers: { ...corsHeaders(origin), "X-Bestsellers-Source": "snapshot" }
       });
     }
+
+    // ✅ CLAVE: si NO hay snapshot, NO hacemos live
+    return new Response(JSON.stringify({ handles: [], meta: { source: "snapshot-miss" } }), {
+      headers: { ...corsHeaders(origin), "X-Bestsellers-Source": "snapshot-miss" }
+    });
   }
+
 
   // 2) Fallback a cálculo en vivo (por si snapshot aún no existe)
   const toParam = url.searchParams.get("to");
