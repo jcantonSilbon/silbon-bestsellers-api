@@ -170,12 +170,7 @@ function isOnlineSource(sourceName?: string | null) {
   if (s.includes("pos")) return false;
 
   // Online: Shopify devuelve muchísimas veces "checkout" o "shopify"
-  return (
-    s.includes("web") ||
-    s.includes("online") ||
-    s.includes("checkout") ||
-    s.includes("shopify")
-  );
+  return s.includes("web") || s.includes("online") || s.includes("checkout") || s.includes("shopify");
 }
 
 /* ======================== C A C H É ======================== */
@@ -221,6 +216,15 @@ function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, ch
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
 }
 
+/* ======================== S N A P S H O T ======================== */
+// OJO: la snapshot SIEMPRE se guarda con limit fijo (60) y aquí recortamos al limit pedido.
+const SNAPSHOT_VER = "v5";
+const SNAPSHOT_LIMIT = 60;
+
+function snapKey(segs: Set<Segment>) {
+  return `bestsellers:${SNAPSHOT_VER}:snapshot:last30:${[...segs].sort().join(",")}:${SNAPSHOT_LIMIT}`;
+}
+
 /* ======================= L O A D E R ======================= */
 export async function loader({ request }: LoaderFunctionArgs) {
   const origin = request.headers.get("Origin");
@@ -236,8 +240,46 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const channelFilter = (url.searchParams.get("channel") || "all").toLowerCase();
 
   // =========================
-  // Fechas (FIX)
+  // SNAPSHOT MODE (default ON)
   // =========================
+  const useSnapshot = url.searchParams.get("snapshot") !== "0"; // default ON
+  if (useSnapshot) {
+    const sKey = snapKey(segments);
+
+    // mini-mem para evitar pegar a redis en bucle (opcional)
+    const mk = `snap:${sKey}`;
+    const mm = mem.get(mk);
+    if (mm && Date.now() - mm.at < 60_000) {
+      const sliced: Resp = {
+        ...mm.value,
+        handles: (mm.value.handles || []).slice(0, limit),
+        meta: { ...(mm.value.meta || {}), source: "snapshot-memory", requestedLimit: limit },
+      };
+      return new Response(JSON.stringify(sliced), { headers: corsHeaders(origin) });
+    }
+
+    const snap = await redisGet(sKey);
+    if (snap && Array.isArray(snap.handles) && snap.handles.length) {
+      const sliced: Resp = {
+        ...snap,
+        handles: snap.handles.slice(0, limit),
+        meta: { ...(snap.meta || {}), source: "snapshot-redis", requestedLimit: limit },
+      };
+      mem.set(mk, { at: Date.now(), value: snap }); // guardo el completo
+      return new Response(JSON.stringify(sliced), { headers: corsHeaders(origin) });
+    }
+
+    // snapshot-miss => no hacemos live para no petar render
+    return new Response(JSON.stringify({ handles: [], meta: { source: "snapshot-miss", key: sKey } }), {
+      headers: corsHeaders(origin),
+    });
+  }
+
+  // =========================
+  // LIVE MODE (solo si snapshot=0)
+  // =========================
+
+  // Fechas (FIX)
   const toParam = url.searchParams.get("to");
   const fromParam = url.searchParams.get("from");
 
@@ -256,13 +298,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
       range: { from: fromISO, to: toISO },
       segments: [...segments],
       channelFilter,
-      step: "start",
+      step: "live-start",
     };
   }
 
-  // =========================
-  // Caché
-  // =========================
+  // Caché live
   const key = k(fromISO, toISO, segments, limit, channelFilter);
   const now = Date.now();
 
@@ -342,13 +382,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
       pages++;
 
       for (const o of nodes) {
-        // Excluir cancelados
         if (o.cancelledAt) {
           skippedByCancelled++;
           continue;
         }
 
-        // Canal online (FIX robusto)
         if (channelFilter === "online") {
           if (!isOnlineSource(o.sourceName)) {
             skippedByChannel++;
