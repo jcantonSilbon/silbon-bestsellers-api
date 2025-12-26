@@ -170,7 +170,12 @@ function isOnlineSource(sourceName?: string | null) {
   if (s.includes("pos")) return false;
 
   // Online: Shopify devuelve muchísimas veces "checkout" o "shopify"
-  return s.includes("web") || s.includes("online") || s.includes("checkout") || s.includes("shopify");
+  return (
+    s.includes("web") ||
+    s.includes("online") ||
+    s.includes("checkout") ||
+    s.includes("shopify")
+  );
 }
 
 /* ======================== C A C H É ======================== */
@@ -184,7 +189,6 @@ const R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 async function redisGet(key: string): Promise<Resp | null> {
   if (!R_URL || !R_TOKEN) return null;
-
   const r = await fetch(`${R_URL}/get/${encodeURIComponent(key)}`, {
     headers: { Authorization: `Bearer ${R_TOKEN}` },
   });
@@ -217,11 +221,6 @@ function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, ch
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
 }
 
-// ✅ CLAVE: snapshot key (MISMO formato que api.bestsellers-snapshot.ts)
-function snapKey(segs: Set<Segment>, limit: number) {
-  return `bestsellers:v5:snapshot:last30:${[...segs].sort().join(",")}:${limit}`;
-}
-
 /* ======================= L O A D E R ======================= */
 export async function loader({ request }: LoaderFunctionArgs) {
   const origin = request.headers.get("Origin");
@@ -237,44 +236,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const channelFilter = (url.searchParams.get("channel") || "all").toLowerCase();
 
   // =========================
-  // SNAPSHOT MODE (default ON)
-  // =========================
-  const useSnapshot = url.searchParams.get("snapshot") !== "0"; // por defecto ON
-
-  if (useSnapshot) {
-    const sKey = snapKey(segments, limit);
-
-    // memoria 60s para ir fino
-    const mk = `snap:${sKey}`;
-    const m = mem.get(mk);
-    if (m && Date.now() - m.at < 60_000) {
-      if (debug) (m.value.meta ??= {}).source = "snapshot-memory";
-      return new Response(JSON.stringify(m.value), { headers: corsHeaders(origin) });
-    }
-
-    const snap = await redisGet(sKey);
-    if (snap && Array.isArray(snap.handles)) {
-      if (debug) (snap.meta ??= {}).source = "snapshot-redis";
-      mem.set(mk, { at: Date.now(), value: snap });
-      return new Response(JSON.stringify(snap), { headers: corsHeaders(origin) });
-    }
-
-    // si NO hay snapshot, NO hacemos live
-    return new Response(JSON.stringify({ handles: [], meta: { source: "snapshot-miss" } }), {
-      headers: corsHeaders(origin),
-    });
-  }
-
-  // =========================
-  // LIVE MODE (solo si snapshot=0)
-  // =========================
-
   // Fechas (FIX)
+  // =========================
   const toParam = url.searchParams.get("to");
   const fromParam = url.searchParams.get("from");
 
   const toDate = toParam ? parseDateParamUTC(toParam, true) : new Date();
-  const fromDate = fromParam ? parseDateParamUTC(fromParam, false) : new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  const fromDate = fromParam
+    ? parseDateParamUTC(fromParam, false)
+    : new Date(Date.now() - 7 * 24 * 3600 * 1000);
 
   const toISO = toDate.toISOString();
   const fromISO = fromDate.toISOString();
@@ -286,11 +256,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       range: { from: fromISO, to: toISO },
       segments: [...segments],
       channelFilter,
-      step: "live-start",
+      step: "start",
     };
   }
 
-  // Caché live
+  // =========================
+  // Caché
+  // =========================
   const key = k(fromISO, toISO, segments, limit, channelFilter);
   const now = Date.now();
 
@@ -376,7 +348,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
           continue;
         }
 
-        // Canal online
+        // Canal online (FIX robusto)
         if (channelFilter === "online") {
           if (!isOnlineSource(o.sourceName)) {
             skippedByChannel++;
@@ -431,7 +403,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return new Response(JSON.stringify(resp), { headers: corsHeaders(origin) });
   } catch (e: unknown) {
     if (debug) {
-      (resp.meta ??= {}).error = e as any;
+      (resp.meta ??= {}).error = e;
       (resp.meta ??= {}).tip =
         "401/403 ⇒ token/dominio. 'Parse error' ⇒ GraphQL. Prueba a acotar fechas o revisar scopes.";
     }
