@@ -145,6 +145,9 @@ type InventoryBySkuRes = {
   };
 };
 
+const ECI_NOTICE =
+  "La disponibilidad mostrada no incluye tiendas de El Corte Inglés. Para consultar stock en estos centros, por favor contacta directamente con tu tienda El Corte Inglés más cercana.";
+
 /** ------- Helper normalización ------- */
 
 function normalizeProvinceList(param: string | null): string[] {
@@ -358,6 +361,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const body: any = {
       ok: true,
       sku: usedSku,
+      notice: ECI_NOTICE,
       locations,
     };
 
