@@ -139,15 +139,15 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   if (wantsMan && wantsWoman && (okMan || okWoman)) return true;
 
   if (wantsTeens && !wantsMan && !wantsWoman && !wantsKids && !wantsGirl) {
-    return okTeens && !okWoman && !okMan && !okKids && !okGirl;
+    return okTeens && !okWoman && !okMan;
   }
 
   if (wantsKids && !wantsMan && !wantsWoman && !wantsTeens && !wantsGirl) {
-    return okKids && !okWoman && !okMan && !okTeens && !okGirl;
+    return okKids && !okWoman && !okMan;
   }
 
   if (wantsGirl && !wantsMan && !wantsWoman && !wantsTeens && !wantsKids) {
-    return okGirl && !okWoman && !okMan && !okTeens && !okKids;
+    return okGirl && !okWoman && !okMan;
   }
 
   if (wantsTeens && okTeens && !okWoman && !okMan) return true;
