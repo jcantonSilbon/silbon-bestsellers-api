@@ -78,7 +78,7 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
 }
 
 function isExcludedSpecialPrice(tags?: string[]) {
-  return (tags || []).some((tag) => tag.trim().toLowerCase() === "oi25-rebajas");
+  return (tags || []).some((tag) => tag.trim().toLowerCase().includes("oi25-rebajas"));
 }
 
 /* ============================ A D M I N  G Q L ============================ */
@@ -243,10 +243,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const maxL = Math.max(...limits);
     const topForMax = sortedIds.slice(0, maxL);
 
-    const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle } } }`;
-    type NodesResp = { nodes: Array<{ id?: string; handle?: string } | null> };
+    const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle tags } } }`;
+    type NodesResp = { nodes: Array<{ id?: string; handle?: string; tags?: string[] } | null> };
     const nd = await gqlWithTimeout<NodesResp>(NODES_QUERY, { ids: topForMax }, 10000);
-    const handlesMax = (nd.nodes || []).filter(Boolean).map((n) => n!.handle).filter(Boolean) as string[];
+    const handlesMax = (nd.nodes || [])
+      .filter(Boolean)
+      .filter((n) => !isExcludedSpecialPrice(n!.tags))
+      .map((n) => n!.handle)
+      .filter(Boolean) as string[];
 
     // Guardamos todas las variantes de límite recortando del máximo
     for (const L of limits) {

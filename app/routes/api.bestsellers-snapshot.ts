@@ -50,6 +50,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
       };
     };
 
+    function isExcludedSpecialPrice(tags?: string[]) {
+      return (tags || []).some((tag) => tag.trim().toLowerCase().includes("oi25-rebajas"));
+    }
+
     const qtyByProductId = new Map<string, number>();
     let cursor: string | null = null;
 
@@ -61,6 +65,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         for (const li of o.lineItems.nodes) {
           const p = li.product;
           if (!p) continue;
+          if (isExcludedSpecialPrice(p.tags)) continue;
           if (!passSegments({ tags: p.tags, productType: p.productType }, segments)) continue;
           qtyByProductId.set(p.id, (qtyByProductId.get(p.id) || 0) + li.quantity);
         }
@@ -75,12 +80,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       .map(([id]) => id);
 
     if (topIds.length) {
-      const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle } } }`;
-      type NodesResp = { nodes: Array<{ id?: string; handle?: string } | null> };
+      const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle tags } } }`;
+      type NodesResp = { nodes: Array<{ id?: string; handle?: string; tags?: string[] } | null> };
       const nd = await adminGQLWithTimeout<NodesResp>(NODES_QUERY, { ids: topIds }, 10000);
 
       resp.handles = (nd.nodes || [])
         .filter(Boolean)
+        .filter((n) => !isExcludedSpecialPrice(n!.tags))
         .map((n) => n!.handle)
         .filter((h): h is string => Boolean(h));
     }

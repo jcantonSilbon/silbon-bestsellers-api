@@ -143,7 +143,7 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
 }
 
 function isExcludedSpecialPrice(tags?: string[]) {
-  return (tags || []).some((tag) => tag.trim().toLowerCase() === "oi25-rebajas");
+  return (tags || []).some((tag) => tag.trim().toLowerCase().includes("oi25-rebajas"));
 }
 
 /* ======================== F E C H A S (FIX) ======================== */
@@ -392,13 +392,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
       .slice(0, limit)
       .map(([id]) => id);
 
-    const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle } } }`;
-    type NodesResp = { nodes: Array<{ id?: string; handle?: string } | null> };
+    const NODES_QUERY = `query N($ids:[ID!]!){ nodes(ids:$ids){ ... on Product { id handle tags } } }`;
+    type NodesResp = { nodes: Array<{ id?: string; handle?: string; tags?: string[] } | null> };
 
     const nd = await adminGQL<NodesResp>(NODES_QUERY, { ids: topIds });
 
     resp.handles = (nd.nodes || [])
       .filter(Boolean)
+      .filter((n) => !isExcludedSpecialPrice(n!.tags))
       .map((n) => n!.handle)
       .filter((h): h is string => Boolean(h));
 
