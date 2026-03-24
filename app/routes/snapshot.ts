@@ -9,7 +9,7 @@ const R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
 const SNAPSHOT_SECRET = process.env.SNAPSHOT_SECRET!;
 const SHOP = process.env.SHOPIFY_SHOP_DOMAIN!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const CACHE_VER = "v5";
+const CACHE_VER = "v6";
 
 const SEGMENTS: Segment[] = ["man", "woman", "teens", "kids"];
 
@@ -75,6 +75,10 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
     if (wantsKids && okKids) ok = true;
   }
   return ok;
+}
+
+function isExcludedSpecialPrice(tags?: string[]) {
+  return (tags || []).some((tag) => tag.trim().toLowerCase() === "oi25-rebajas");
 }
 
 /* ============================ A D M I N  G Q L ============================ */
@@ -211,6 +215,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     for (const li of allLineItems) {
       const p = li.product;
+      if (isExcludedSpecialPrice(p.tags)) continue;
       if (!passSegments({ tags: p.tags, productType: p.productType }, segs)) continue;
       qtyByProductId.set(p.id, (qtyByProductId.get(p.id) || 0) + li.quantity);
     }

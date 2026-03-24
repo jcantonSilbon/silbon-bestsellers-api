@@ -142,6 +142,10 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   return false;
 }
 
+function isExcludedSpecialPrice(tags?: string[]) {
+  return (tags || []).some((tag) => tag.trim().toLowerCase() === "oi25-rebajas");
+}
+
 /* ======================== F E C H A S (FIX) ======================== */
 // YYYY-MM-DD => UTC start/end of day
 function parseDateParamUTC(dateStr: string, endOfDay: boolean) {
@@ -216,7 +220,7 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
   }).catch(() => {});
 }
 
-const CACHE_VER = "v8";
+const CACHE_VER = "v9";
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, channel: string) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
 }
@@ -360,6 +364,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
           scanned++;
           const p = li.product;
           if (!p) continue;
+          if (isExcludedSpecialPrice(p.tags)) continue;
           if (!passSegments({ tags: p.tags, productType: p.productType }, segments)) continue;
           qtyByProductId.set(p.id, (qtyByProductId.get(p.id) || 0) + li.quantity);
         }
