@@ -130,14 +130,29 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
 
   const wantsMan = segments.has("man");
   const wantsWoman = segments.has("woman");
+  const wantsTeens = segments.has("teens");
+  const wantsKids = segments.has("kids");
+  const wantsGirl = segments.has("girl");
 
   if (wantsMan && !wantsWoman) return okMan && !okWoman;
   if (wantsWoman && !wantsMan) return okWoman && !okMan;
   if (wantsMan && wantsWoman && (okMan || okWoman)) return true;
 
-  if (segments.has("teens") && okTeens) return true;
-  if (segments.has("kids") && okKids) return true;
-  if (segments.has("girl") && okGirl) return true;
+  if (wantsTeens && !wantsMan && !wantsWoman && !wantsKids && !wantsGirl) {
+    return okTeens && !okWoman && !okMan && !okKids && !okGirl;
+  }
+
+  if (wantsKids && !wantsMan && !wantsWoman && !wantsTeens && !wantsGirl) {
+    return okKids && !okWoman && !okMan && !okTeens && !okGirl;
+  }
+
+  if (wantsGirl && !wantsMan && !wantsWoman && !wantsTeens && !wantsKids) {
+    return okGirl && !okWoman && !okMan && !okTeens && !okKids;
+  }
+
+  if (wantsTeens && okTeens && !okWoman && !okMan) return true;
+  if (wantsKids && okKids && !okWoman && !okMan) return true;
+  if (wantsGirl && okGirl && !okWoman && !okMan) return true;
 
   return false;
 }

@@ -70,9 +70,17 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   else if (wantsWoman && !wantsMan) ok = okWoman && !okMan;
   else if (wantsMan && wantsWoman) ok = okMan || okWoman;
 
+  if (!ok && wantsTeens && !wantsMan && !wantsWoman && !wantsKids) {
+    ok = okTeens && !okWoman && !okMan && !okKids;
+  }
+
+  if (!ok && wantsKids && !wantsMan && !wantsWoman && !wantsTeens) {
+    ok = okKids && !okWoman && !okMan && !okTeens;
+  }
+
   if (!ok) {
-    if (wantsTeens && okTeens) ok = true;
-    if (wantsKids && okKids) ok = true;
+    if (wantsTeens && okTeens && !okWoman && !okMan) ok = true;
+    if (wantsKids && okKids && !okWoman && !okMan) ok = true;
   }
   return ok;
 }
