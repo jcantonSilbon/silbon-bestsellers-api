@@ -71,7 +71,7 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   else if (wantsMan && wantsWoman) ok = okMan || okWoman;
 
   if (!ok && wantsTeens && !wantsMan && !wantsWoman && !wantsKids) {
-    ok = okTeens && !okWoman && !okMan;
+    ok = !okWoman;
   }
 
   if (!ok && wantsKids && !wantsMan && !wantsWoman && !wantsTeens) {
@@ -79,7 +79,7 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   }
 
   if (!ok) {
-    if (wantsTeens && okTeens && !okWoman && !okMan) ok = true;
+    if (wantsTeens && !okWoman) ok = true;
     if (wantsKids && okKids && !okWoman && !okMan) ok = true;
   }
   return ok;
