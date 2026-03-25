@@ -220,7 +220,21 @@ async function redisGet(key: string): Promise<Resp | null> {
   if (!packed) return null;
 
   try {
-    return JSON.parse(packed) as Resp;
+    const parsed = JSON.parse(packed) as
+      | Resp
+      | { value?: string | Resp; result?: string | Resp; handles?: string[]; meta?: Record<string, unknown> };
+
+    if (Array.isArray((parsed as Resp).handles)) return parsed as Resp;
+
+    const nested = parsed && typeof parsed === "object" ? (parsed.value ?? parsed.result) : null;
+    if (typeof nested === "string") {
+      const nestedParsed = JSON.parse(nested) as Resp;
+      if (Array.isArray(nestedParsed?.handles)) return nestedParsed;
+    }
+    if (nested && typeof nested === "object" && Array.isArray((nested as Resp).handles)) {
+      return nested as Resp;
+    }
+    return null;
   } catch {
     return null;
   }
