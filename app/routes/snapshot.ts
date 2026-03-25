@@ -9,14 +9,17 @@ const R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
 const SNAPSHOT_SECRET = process.env.SNAPSHOT_SECRET!;
 const SHOP = process.env.SHOPIFY_SHOP_DOMAIN!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const CACHE_VER = "v6";
+const CACHE_VER = "v7";
+const SNAPSHOT_DAYS = Math.max(1, Number(process.env.BESTSELLERS_SNAPSHOT_DAYS || 15));
 
 const SEGMENTS: Segment[] = ["man", "woman", "teens", "kids"];
 
 /** Clave de snapshot: últimos 30 días + conjunto de segmentos + límite */
-function snapKey(segs: Set<Segment>, limit: number) {
+function snapKey(segs: Set<Segment>, limit: number, channel = "online") {
   // OJO: key estable (segs ordenados, empty set = "")
-  return `bestsellers:${CACHE_VER}:snapshot:last30:${[...segs].sort().join(",")}:${limit}`;
+  return `bestsellers:${CACHE_VER}:snapshot:last${SNAPSHOT_DAYS}:${[...segs]
+    .sort()
+    .join(",")}:${limit}:${channel}`;
 }
 
 /* =========================== F E C H A S  U T C =========================== */
@@ -89,6 +92,13 @@ function isExcludedSpecialPrice(tags?: string[]) {
   return (tags || []).some((tag) => tag.trim().toLowerCase().includes("oi25-rebajas"));
 }
 
+function isOnlineSource(sourceName?: string | null) {
+  const s = String(sourceName || "").toLowerCase().trim();
+  if (!s) return true;
+  if (s.includes("pos")) return false;
+  return s.includes("web") || s.includes("online") || s.includes("checkout") || s.includes("shopify");
+}
+
 /* ============================ A D M I N  G Q L ============================ */
 type GQLError = { message: string; extensions?: Record<string, unknown> };
 type GraphQLResponse<T> = { data?: T; errors?: GQLError[] };
@@ -145,8 +155,7 @@ function allCombinations<T>(arr: readonly T[], includeEmpty = true): Array<Set<T
 function parseLimits(url: URL): number[] {
   const raw = (url.searchParams.get("limits") || "").trim();
   if (!raw) {
-    const single = Math.min(parseInt(url.searchParams.get("limit") || "100", 10), 100);
-    return [isFinite(single) && single > 0 ? single : 100];
+    return [19, 40, 60, 100];
   }
   const out = new Set<number>();
   for (const p of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
@@ -170,9 +179,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // Config: múltiples límites o uno solo
   const limits = parseLimits(url); // p.ej. [20,60,100]
 
-  // Últimos 30 días (normalizado a bordes de día UTC)
+  // Últimos N días (normalizado a bordes de día UTC)
   const toISO = endOfDayUTC(new Date()).toISOString();
-  const fromISO = startOfDayUTC(new Date(Date.now() - 30 * 24 * 3600 * 1000)).toISOString();
+  const fromISO = startOfDayUTC(new Date(Date.now() - SNAPSHOT_DAYS * 24 * 3600 * 1000)).toISOString();
 
   const searchBase = `financial_status:paid created_at:>=${fromISO} created_at:<=${toISO}`;
   const ORDERS_QUERY = `
@@ -180,6 +189,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       orders(first: 100, after:$cursor, query: "${searchBase.replace(/"/g, '\\"')}") {
         pageInfo { hasNextPage endCursor }
         nodes {
+          sourceName
+          cancelledAt
           lineItems(first: 100) {
             nodes {
               quantity
@@ -194,6 +205,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     orders: {
       pageInfo: { hasNextPage: boolean; endCursor: string | null };
       nodes: Array<{
+        sourceName?: string | null;
+        cancelledAt?: string | null;
         lineItems: { nodes: Array<{ quantity: number; product: { id: string; handle: string; tags?: string[]; productType?: string } | null }> };
       }>;
     };
@@ -210,6 +223,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const data = await gqlWithTimeout<OrdersPage>(ORDERS_QUERY, { cursor }, 15000);
     const { nodes, pageInfo } = data.orders;
     for (const o of nodes) {
+      if (o.cancelledAt) continue;
+      if (!isOnlineSource(o.sourceName)) continue;
       for (const li of o.lineItems.nodes) {
         if (li.product) allLineItems.push({ quantity: li.quantity, product: li.product });
       }
@@ -237,6 +252,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             snapshot_at: new Date().toISOString(),
             range: { from: fromISO, to: toISO },
             segments: [...segs],
+            channel: "online",
             source: "snapshot",
           },
         });
@@ -269,6 +285,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
           snapshot_at: new Date().toISOString(),
           range: { from: fromISO, to: toISO },
           segments: [...segs],
+          channel: "online",
           source: "snapshot",
         },
       });
@@ -288,6 +305,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       ok: true,
       snapshot_at: new Date().toISOString(),
       range: { from: fromISO, to: toISO },
+      channel: "online",
       segments: combos.map((s) => [...s].join("+") || "all"),
       limits,
     }),

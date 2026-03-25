@@ -236,8 +236,18 @@ async function redisSet(key: string, value: Resp, ttlSec: number) {
 }
 
 const CACHE_VER = "v9";
+const SNAPSHOT_CACHE_VER = "v7";
+const SNAPSHOT_DAYS = Math.max(1, Number(process.env.BESTSELLERS_SNAPSHOT_DAYS || 15));
 function k(fromISO: string, toISO: string, segs: Set<Segment>, limit: number, channel: string) {
   return `bestsellers:${CACHE_VER}:${fromISO}:${toISO}:${[...segs].sort().join(",")}:${limit}:${channel}`;
+}
+function snapKey(segs: Set<Segment>, limit: number, channel: string) {
+  return `bestsellers:${SNAPSHOT_CACHE_VER}:snapshot:last${SNAPSHOT_DAYS}:${[...segs]
+    .sort()
+    .join(",")}:${limit}:${channel}`;
+}
+function snapshotCandidateLimits(limit: number) {
+  return [...new Set([limit, 19, 40, 60, 100])].sort((a, b) => a - b);
 }
 
 /* ======================= L O A D E R ======================= */
@@ -284,6 +294,24 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // =========================
   const key = k(fromISO, toISO, segments, limit, channelFilter);
   const now = Date.now();
+
+  // Para colecciones automáticas queremos responder desde snapshot precalculado
+  // y solo caer al cálculo en vivo si no existe todavía.
+  if (!nocache && channelFilter === "online" && url.searchParams.get("snapshot") !== "0") {
+    for (const snapLimit of snapshotCandidateLimits(limit)) {
+      const sHit = await redisGet(snapKey(segments, snapLimit, channelFilter));
+      if (!sHit) continue;
+      const payload: Resp =
+        snapLimit === limit ? sHit : { ...sHit, handles: (sHit.handles || []).slice(0, limit) };
+      if (debug) {
+        (payload.meta ??= {}).source = "snapshot";
+        (payload.meta ??= {}).snapshot_days = SNAPSHOT_DAYS;
+        (payload.meta ??= {}).snapshot_limit = snapLimit;
+        (payload.meta ??= {}).range = { from: fromISO, to: toISO };
+      }
+      return new Response(JSON.stringify(payload), { headers: corsHeaders(origin) });
+    }
+  }
 
   if (!nocache) {
     const m = mem.get(key);
