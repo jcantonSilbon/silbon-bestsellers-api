@@ -1,7 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 
 /* ===================== T I P O S  &  C O N S T A N T E S ===================== */
-type Segment = "man" | "woman" | "teens" | "kids";
+type Segment = "man" | "woman" | "teens" | "kids" | "girl";
 type Resp = { handles: string[]; meta?: Record<string, unknown> };
 
 const R_URL = process.env.UPSTASH_REDIS_REST_URL!;
@@ -12,7 +12,7 @@ const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
 const CACHE_VER = "v7";
 const SNAPSHOT_DAYS = Math.max(1, Number(process.env.BESTSELLERS_SNAPSHOT_DAYS || 15));
 
-const SEGMENTS: Segment[] = ["man", "woman", "teens", "kids"];
+const SEGMENTS: Segment[] = ["man", "woman", "teens", "kids", "girl"];
 
 /** Clave de snapshot: últimos 30 días + conjunto de segmentos + límite */
 function snapKey(segs: Set<Segment>, limit: number, channel = "online") {
@@ -61,29 +61,36 @@ function passSegments(p: { tags?: string[]; productType?: string }, segments: Se
   const okWoman = hasAnyToken(tagsTokens, TOK.woman) || hasAnyToken(ptTokens, TOK.woman);
   const okTeens = hasAnyToken(tagsTokens, TOK.teens) || hasAnyToken(ptTokens, TOK.teens);
   const okKids = hasAnyToken(tagsTokens, TOK.kids) || hasAnyToken(ptTokens, TOK.kids);
+  const okGirl = hasAnyToken(tagsTokens, ["segment:girl", "girl", "girls", "nina", "ninas"]) || hasAnyToken(ptTokens, ["segment:girl", "girl", "girls", "nina", "ninas"]);
 
   // Lógica de combinación (man/woman exclusivos; teens/kids independientes)
   const wantsMan = segments.has("man");
   const wantsWoman = segments.has("woman");
   const wantsTeens = segments.has("teens");
   const wantsKids = segments.has("kids");
+  const wantsGirl = segments.has("girl");
 
   let ok = false;
   if (wantsMan && !wantsWoman) ok = okMan && !okWoman;
   else if (wantsWoman && !wantsMan) ok = okWoman && !okMan;
   else if (wantsMan && wantsWoman) ok = okMan || okWoman;
 
-  if (!ok && wantsTeens && !wantsMan && !wantsWoman && !wantsKids) {
-    ok = okTeens && !okWoman && !okKids;
+  if (!ok && wantsTeens && !wantsMan && !wantsWoman && !wantsKids && !wantsGirl) {
+    ok = okTeens && !okWoman && !okKids && !okGirl;
   }
 
-  if (!ok && wantsKids && !wantsMan && !wantsWoman && !wantsTeens) {
+  if (!ok && wantsKids && !wantsMan && !wantsWoman && !wantsTeens && !wantsGirl) {
     ok = okKids && !okWoman && !okMan;
   }
 
+  if (!ok && wantsGirl && !wantsMan && !wantsWoman && !wantsTeens && !wantsKids) {
+    ok = okGirl && !okWoman && !okMan;
+  }
+
   if (!ok) {
-    if (wantsTeens && okTeens && !okWoman && !okKids) ok = true;
+    if (wantsTeens && okTeens && !okWoman && !okKids && !okGirl) ok = true;
     if (wantsKids && okKids && !okWoman && !okMan) ok = true;
+    if (wantsGirl && okGirl && !okWoman && !okMan) ok = true;
   }
   return ok;
 }
